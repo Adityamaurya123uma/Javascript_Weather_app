@@ -1,0 +1,86 @@
+import math
+from datetime import datetime, timezone, timedelta
+from functools import lru_cache
+from .utils import norm_deg
+
+
+def to_julian_day(dt: datetime) -> float:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    y = dt.year
+    m = dt.month
+    D = dt.day + (dt.hour + (dt.minute + dt.second / 60.0) / 60.0) / 24.0
+    if m <= 2:
+        y -= 1
+        m += 12
+    A = y // 100
+    B = 2 - A + (A // 4)
+    JD = math.floor(365.25 * (y + 4716)) + math.floor(30.6001 * (m + 1)) + D + B - 1524.5
+    return JD
+
+
+def from_julian_day(jd: float) -> datetime:
+    Z = int(jd + 0.5)
+    F = (jd + 0.5) - Z
+    if Z < 2299161:
+        A = Z
+    else:
+        alpha = int((Z - 1867216.25) / 36524.25)
+        A = Z + 1 + alpha - int(alpha / 4)
+    B = A + 1524
+    C = int((B - 122.1) / 365.25)
+    D = int(365.25 * C)
+    E = int((B - D) / 30.6001)
+    day = B - D - int(30.6001 * E) + F
+    month = E - 1 if E < 14 else E - 13
+    year = C - 4716 if month > 2 else C - 4715
+    day_int = int(day)
+    frac = day - day_int
+    hours = int(frac * 24.0)
+    minutes = int((frac * 24.0 - hours) * 60.0)
+    seconds = int(round((((frac * 24.0 - hours) * 60.0) - minutes) * 60.0))
+    if seconds == 60:
+        seconds = 59
+    return datetime(year, month, day_int, hours, minutes, seconds, tzinfo=timezone.utc)
+
+
+def T_centuries(jd: float) -> float:
+    return (jd - 2451545.0) / 36525.0
+
+
+@lru_cache(maxsize=1024)
+def delta_t_seconds_approx(year: int, month: int = 1) -> float:
+    y = year + (month - 0.5) / 12.0
+    if 2005 <= y <= 2050:
+        t = y - 2000
+        dt = 62.92 + 0.32217 * t + 0.005589 * t * t
+        return dt
+    if 1900 <= y < 2005:
+        t = y - 1900
+        dt = -2.79 + 1.494119 * t - 0.0598939 * t * t + 0.0061966 * t * t * t - 0.000197 * t * t * t * t
+        return dt
+    if y >= 2050:
+        t = y - 2000
+        dt = 62.92 + 0.32217 * t + 0.005589 * t * t
+        return dt
+    return 68.0
+
+
+def jd_tt_from_jd_ut(jd_ut: float) -> float:
+    dt = from_julian_day(jd_ut)
+    dt_s = delta_t_seconds_approx(dt.year, dt.month)
+    return jd_ut + dt_s / 86400.0
+
+
+def jd_ut_from_jd_tt(jd_tt: float) -> float:
+    dt = from_julian_day(jd_tt)
+    dt_s = delta_t_seconds_approx(dt.year, dt.month)
+    return jd_tt - dt_s / 86400.0
+
+
+@lru_cache(maxsize=8192)
+def gmst_deg_from_jd_ut(jd_ut: float) -> float:
+    T = (jd_ut - 2451545.0) / 36525.0
+    GMST = norm_deg(280.46061837 + 360.98564736629 * (jd_ut - 2451545.0) + 0.000387933 * T * T - T * T * T / 38710000.0)
+    return GMST
