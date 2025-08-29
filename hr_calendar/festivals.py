@@ -6,9 +6,10 @@ from typing import Dict, List, Tuple, Callable, Any
 
 from .locations import Location
 from .time_utils import to_julian_day, jd_tt_from_jd_ut, jd_ut_from_jd_tt, from_julian_day
-from .phase import tithi_at_local_sunrise, tithi_at_local_sunset, find_phase_time_tt_near
+from .phase import tithi_at_local_sunrise, tithi_at_local_sunset, find_phase_time_tt_near, lunar_phase_angle_tt_deg
 from .sidereal import find_solar_sidereal_ingress_tt_near
 from .astro import sun_ecliptic_longitude_deg
+from .utils import wrap180
 
 
 @dataclass
@@ -32,19 +33,48 @@ class FestivalDetail:
 
 
 def _precompute_lunations(year: int, loc: Location) -> List[Tuple[str, float]]:
-    """Compute approximate TT times of new and full moons across the year.
+    """Find all new and full moons by scanning and bracketing, then refining.
 
-    Returns a list of (kind, jd_tt_rounded) sorted by TT, where kind ∈ {"NewMoon","FullMoon"}.
-    Rounding keeps uniqueness stable and matches prior behavior.
+    - Scans TT over the year with small steps to detect sign changes of
+      wrap180(phase - target), for targets 0° (new) and 180° (full).
+    - Each detected crossing is refined with the existing root finder.
+    - Results are rounded and deduplicated, preserving previous behavior while
+      improving robustness near month boundaries.
     """
+    # Scan slightly beyond the year to catch boundary lunations
+    start_utc = datetime(year, 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
+    end_utc = datetime(year, 12, 31, tzinfo=timezone.utc) + timedelta(days=2)
+    jd_tt_start = jd_tt_from_jd_ut(to_julian_day(start_utc))
+    jd_tt_end = jd_tt_from_jd_ut(to_julian_day(end_utc))
+
+    step_days = 0.25  # 6-hour step for reliable bracketing
     lun_list: List[Tuple[str, float]] = []
-    for month in range(1, 13):
-        guess_ut = to_julian_day(datetime(year, month, 15, tzinfo=timezone.utc))
-        guess_tt = jd_tt_from_jd_ut(guess_ut)
-        nm_tt = find_phase_time_tt_near(guess_tt, 0.0, loc)
-        fm_tt = find_phase_time_tt_near(guess_tt, 180.0, loc)
-        lun_list.append(("NewMoon", nm_tt))
-        lun_list.append(("FullMoon", fm_tt))
+
+    j = jd_tt_start
+    prev_new = wrap180(lunar_phase_angle_tt_deg(j, False, loc) - 0.0)
+    prev_full = wrap180(lunar_phase_angle_tt_deg(j, False, loc) - 180.0)
+
+    while j < jd_tt_end:
+        jn = j + step_days
+        cur_new = wrap180(lunar_phase_angle_tt_deg(jn, False, loc) - 0.0)
+        cur_full = wrap180(lunar_phase_angle_tt_deg(jn, False, loc) - 180.0)
+
+        # Detect crossings for new moon
+        if prev_new == 0.0 or cur_new == 0.0 or (prev_new < 0.0 and cur_new > 0.0) or (prev_new > 0.0 and cur_new < 0.0):
+            guess = 0.5 * (j + jn)
+            nm_tt = find_phase_time_tt_near(guess, 0.0, loc)
+            lun_list.append(("NewMoon", nm_tt))
+
+        # Detect crossings for full moon
+        if prev_full == 0.0 or cur_full == 0.0 or (prev_full < 0.0 and cur_full > 0.0) or (prev_full > 0.0 and cur_full < 0.0):
+            guess = 0.5 * (j + jn)
+            fm_tt = find_phase_time_tt_near(guess, 180.0, loc)
+            lun_list.append(("FullMoon", fm_tt))
+
+        j = jn
+        prev_new = cur_new
+        prev_full = cur_full
+
     lun_unique = sorted({(k, round(v, 6)) for k, v in lun_list}, key=lambda x: x[1])
     return lun_unique
 
