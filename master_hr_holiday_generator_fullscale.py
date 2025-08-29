@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from hr_calendar.locations import LOCATIONS, Location
-from hr_calendar.festivals import find_festivals_high_accuracy
+from hr_calendar.hindu_calendar import HinduCalendar
 import json
 
 
@@ -35,5 +35,6 @@ if __name__ == "__main__":
         sys.exit(1)
     lat, lon, tz, height = LOCATIONS[code]
     loc = Location(lat=lat, lon=lon, tz=tz, height_m=height)
-    result = find_festivals_high_accuracy(year, loc)
+    cal = HinduCalendar(loc)
+    result = cal.festivals_for_year(year)
     print(json.dumps(result, indent=2))
