@@ -238,21 +238,43 @@ class HinduCalendar:
         return fm_local
 
     def _compute_maha_shivaratri(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
-        """Maha Shivaratri: Krishna Chaturdashi (tithi 29) at Nishita in Feb/Mar."""
-        candidates: List[date] = []
+        """Maha Shivaratri (Purnimanta): Krishna Chaturdashi at Nishita tied to the March new moon.
+
+        We first anchor to the Phalguna Amavasya (new moon in March) and then
+        search the preceding days for a date where the Nishita tithi is 29
+        (Krishna Chaturdashi).
+        """
+        # Find the March new moon (local date month == 3)
+        march_nm_tt = None
+        march_nm_date = None
         for kind, jd_tt in lun_unique:
-            if kind == "NewMoon":
-                d_local, _ = self._tt_to_local_date(jd_tt)
-                if d_local.year == year and d_local.month in (2, 3):
-                    candidates.extend([d_local - timedelta(days=1), d_local - timedelta(days=2), d_local])
-        if not candidates:
-            nm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 2, 15, tzinfo=timezone.utc))), 0.0, self.location)
-            d_local = self._tt_to_local_date(nm_tt)[0]
-            candidates = [d_local - timedelta(days=1), d_local - timedelta(days=2), d_local]
-        for d in sorted(set(candidates)):
+            if kind != "NewMoon":
+                continue
+            d_local, _ = self._tt_to_local_date(jd_tt)
+            if d_local.year == year and d_local.month == 3:
+                march_nm_tt = jd_tt
+                march_nm_date = d_local
+                break
+        if march_nm_tt is None:
+            # Fallback: choose the new moon closest to mid-March
+            target = to_julian_day(datetime(year, 3, 15, tzinfo=timezone.utc))
+            best = (1e9, None)
+            for kind, jd_tt in lun_unique:
+                if kind != "NewMoon":
+                    continue
+                diff = abs(jd_tt - target)
+                if diff < best[0]:
+                    best = (diff, jd_tt)
+            march_nm_tt = best[1]
+            march_nm_date = self._tt_to_local_date(march_nm_tt)[0]
+
+        # Search the two nights before the March new moon for Nishita tithi 29
+        for delta in (1, 2, 3):
+            d = march_nm_date - timedelta(days=delta)
             if self._nishita_tithi(d) == 29:
                 return d
-        return sorted(set(candidates))[0]
+        # Fallback: day before the March new moon
+        return march_nm_date - timedelta(days=1)
 
     def _compute_navratri_start(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
         """Navratri start: day after Ashwin Amavasya (Sep/Oct new moon)."""
