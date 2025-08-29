@@ -256,3 +256,164 @@ class HinduCalendar:
                 best_j = j
         local_date, _ = self._tt_to_local_date(best_j)
         return local_date
+
+    # ------------------------------
+    # Additional holiday convenience
+    # ------------------------------
+
+    def _compute_maha_shivaratri_holiday(self, year: int) -> date:
+        """Wrapper for Maha Shivaratri using internal lunar logic."""
+        lunations = self._precompute_lunations(year)
+        return self._compute_maha_shivaratri(year, lunations)
+
+    def _compute_holi_holiday(self, year: int) -> date:
+        """Wrapper for Holi (Phalguna Purnima)."""
+        lunations = self._precompute_lunations(year)
+        return self._compute_holi(year, lunations)
+
+    def _compute_mahavir_jayanti_holiday(self, year: int) -> date:
+        """Mahavir Jayanti (Chaitra Shukla Trayodashi, simplified).
+
+        Approximation: take the April full moon (Chaitra Purnima) and search
+        nearby days for sunrise tithi == 13 (Trayodashi).
+        """
+        lun = self._precompute_lunations(year)
+        # Pick April full moon or nearest to Apr 15
+        fm_tt = None
+        best = (1e9, None)
+        target_jd = to_julian_day(datetime(year, 4, 15, tzinfo=timezone.utc))
+        for kind, jd_tt in lun:
+            if kind != "FullMoon":
+                continue
+            d_local, _ = self._tt_to_local_date(jd_tt)
+            if d_local.year == year and d_local.month == 4:
+                fm_tt = jd_tt
+                break
+            # track nearest to Apr 15 if April not found
+            diff = abs(jd_tt - target_jd)
+            if diff < best[0]:
+                best = (diff, jd_tt)
+        if fm_tt is None:
+            fm_tt = best[1]
+        fm_local, _ = self._tt_to_local_date(fm_tt)
+        # Search a small window around two days before full moon
+        for delta in (-3, -2, -1, 0, 1):
+            candidate = fm_local + timedelta(days=delta - 2)
+            if self.tithi_at_sunrise(candidate) == 13:
+                return candidate
+        return fm_local + timedelta(days=-2)
+
+    def _compute_good_friday_holiday(self, year: int) -> date:
+        """Good Friday: two days before Easter Sunday (Gregorian computus)."""
+        easter = self._easter_sunday_gregorian(year)
+        return easter - timedelta(days=2)
+
+    def _compute_buddha_purnima_holiday(self, year: int) -> date:
+        """Buddha Purnima (Vaishakha Purnima, simplified): full moon in May."""
+        lun = self._precompute_lunations(year)
+        fm_tt = None
+        best = (1e9, None)
+        target_jd = to_julian_day(datetime(year, 5, 15, tzinfo=timezone.utc))
+        for kind, jd_tt in lun:
+            if kind != "FullMoon":
+                continue
+            d_local, _ = self._tt_to_local_date(jd_tt)
+            if d_local.year == year and d_local.month == 5:
+                fm_tt = jd_tt
+                break
+            diff = abs(jd_tt - target_jd)
+            if diff < best[0]:
+                best = (diff, jd_tt)
+        if fm_tt is None:
+            fm_tt = best[1]
+        return self._tt_to_local_date(fm_tt)[0]
+
+    def _compute_janmashtami_holiday(self, year: int) -> date:
+        """Janmashtami (Bhadrapada Krishna Ashtami, simplified).
+
+        Approximation: take the August full moon and search the next two weeks
+        for a day where sunset tithi == 23 (Krishna Ashtami).
+        """
+        lun = self._precompute_lunations(year)
+        fm_local = None
+        # Prefer August full moon; otherwise take September
+        for month_target in (8, 9):
+            for kind, jd_tt in lun:
+                if kind != "FullMoon":
+                    continue
+                d_local, _ = self._tt_to_local_date(jd_tt)
+                if d_local.year == year and d_local.month == month_target:
+                    fm_local = d_local
+                    break
+            if fm_local is not None:
+                break
+        if fm_local is None:
+            # Fallback: nearest to Aug 15
+            best = (1e9, None)
+            target_jd = to_julian_day(datetime(year, 8, 15, tzinfo=timezone.utc))
+            for kind, jd_tt in lun:
+                if kind != "FullMoon":
+                    continue
+                diff = abs(jd_tt - target_jd)
+                if diff < best[0]:
+                    best = (diff, self._tt_to_local_date(jd_tt)[0])
+            fm_local = best[1]
+        # Scan next fortnight for Krishna Ashtami (tithi 23)
+        for d in range(1, 15):
+            day = fm_local + timedelta(days=d)
+            if self.tithi_at_sunset(day) == 23:
+                return day
+        # Fallback approximate 8 days after full moon
+        return fm_local + timedelta(days=8)
+
+    def _compute_dussehra_holiday(self, year: int) -> date:
+        """Dussehra (Vijayadashami, simplified): 10th day after Pratipada.
+
+        Approximation: Navratri start is Shukla Pratipada, so Dussehra ≈ start + 9 days.
+        """
+        lun = self._precompute_lunations(year)
+        start = self._compute_navratri_start(year, lun)
+        return start + timedelta(days=9)
+
+    def _compute_diwali_deepavali_holiday(self, year: int) -> date:
+        """Diwali/Deepavali convenience wrapper."""
+        lun = self._precompute_lunations(year)
+        return self._compute_diwali(year, lun)
+
+    def _compute_guru_nanak_jayanti_holiday(self, year: int) -> date:
+        """Guru Nanak Jayanti (Kartik Purnima, simplified): full moon in November."""
+        lun = self._precompute_lunations(year)
+        fm_tt = None
+        best = (1e9, None)
+        target_jd = to_julian_day(datetime(year, 11, 15, tzinfo=timezone.utc))
+        for kind, jd_tt in lun:
+            if kind != "FullMoon":
+                continue
+            d_local, _ = self._tt_to_local_date(jd_tt)
+            if d_local.year == year and d_local.month == 11:
+                fm_tt = jd_tt
+                break
+            diff = abs(jd_tt - target_jd)
+            if diff < best[0]:
+                best = (diff, jd_tt)
+        if fm_tt is None:
+            fm_tt = best[1]
+        return self._tt_to_local_date(fm_tt)[0]
+
+    def _easter_sunday_gregorian(self, year: int) -> date:
+        """Compute Easter Sunday (Gregorian) using Anonymous Gregorian algorithm."""
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        L = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * L) // 451
+        month = (h + L - 7 * m + 114) // 31
+        day = ((h + L - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
