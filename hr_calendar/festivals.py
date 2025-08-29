@@ -1,4 +1,9 @@
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone, date
+from typing import Dict, List, Tuple, Callable, Any
+
 from .locations import Location
 from .time_utils import to_julian_day, jd_tt_from_jd_ut, jd_ut_from_jd_tt, from_julian_day
 from .phase import tithi_at_local_sunrise, tithi_at_local_sunset, find_phase_time_tt_near
@@ -6,9 +11,33 @@ from .sidereal import find_solar_sidereal_ingress_tt_near
 from .astro import sun_ecliptic_longitude_deg
 
 
-def find_festivals_high_accuracy(year: int, loc: Location) -> dict:
-    festivals = {}
-    lun_list = []
+@dataclass
+class FestivalDetail:
+    """Container for a single festival's computed outcome and supporting context.
+
+    Fields:
+    - name: Festival name
+    - local_date: Observance local date (location's civil date)
+    - iso: ISO-8601 string for local_date
+    - rationale: Human-readable summary of the rule used and why this date was chosen
+    - metadata: Opaque dict with supporting values (JDs, tithi checks, candidates)
+
+    The metadata is intentionally a dict to allow additions without breaking callers.
+    """
+    name: str
+    local_date: date
+    iso: str
+    rationale: str
+    metadata: Dict[str, Any]
+
+
+def _precompute_lunations(year: int, loc: Location) -> List[Tuple[str, float]]:
+    """Compute approximate TT times of new and full moons across the year.
+
+    Returns a list of (kind, jd_tt_rounded) sorted by TT, where kind ∈ {"NewMoon","FullMoon"}.
+    Rounding keeps uniqueness stable and matches prior behavior.
+    """
+    lun_list: List[Tuple[str, float]] = []
     for month in range(1, 13):
         guess_ut = to_julian_day(datetime(year, month, 15, tzinfo=timezone.utc))
         guess_tt = jd_tt_from_jd_ut(guess_ut)
@@ -17,120 +46,234 @@ def find_festivals_high_accuracy(year: int, loc: Location) -> dict:
         lun_list.append(("NewMoon", nm_tt))
         lun_list.append(("FullMoon", fm_tt))
     lun_unique = sorted({(k, round(v, 6)) for k, v in lun_list}, key=lambda x: x[1])
+    return lun_unique
 
-    def tt_to_local_date(jd_tt):
-        jd_ut = jd_ut_from_jd_tt(jd_tt)
-        dt_utc = from_julian_day(jd_ut)
-        return (dt_utc + timedelta(hours=loc.tz)).date(), jd_ut
 
-    diwali_candidates = []
-    for k, jd_tt in lun_unique:
-        if k == "NewMoon":
-            d_local, jd_ut = tt_to_local_date(jd_tt)
+def _tt_to_local_date(jd_tt: float, loc: Location) -> Tuple[date, float]:
+    """Convert TT to local civil date for the given location, returning (local_date, jd_ut)."""
+    jd_ut = jd_ut_from_jd_tt(jd_tt)
+    dt_utc = from_julian_day(jd_ut)
+    return (dt_utc + timedelta(hours=loc.tz)).date(), jd_ut
+
+
+def compute_diwali_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Diwali (Kartik Amavasya) using sunset tithi.
+
+    Rule implemented:
+    - Select the new moon that falls in local Oct/Nov. If multiple, use the one closest to Nov 1 as a seed.
+    - Choose the date on which Amavasya (tithi 30) prevails at local sunset; fallback to sunrise if needed.
+    """
+    diwali_candidates: List[Tuple[date, float]] = []
+    for kind, jd_tt in lun_unique:
+        if kind == "NewMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month in (10, 11):
                 diwali_candidates.append((d_local, jd_tt))
     if not diwali_candidates:
         guess_ut = to_julian_day(datetime(year, 11, 15, tzinfo=timezone.utc))
         nm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(guess_ut), 0.0, loc)
-        diwali_candidates.append((tt_to_local_date(nm_tt)[0], nm_tt))
+        diwali_candidates.append((_tt_to_local_date(nm_tt, loc)[0], nm_tt))
+
     target_jd = to_julian_day(datetime(year, 11, 1, tzinfo=timezone.utc))
     diwali_candidates.sort(key=lambda x: abs(x[1] - target_jd))
-    candidate_date = diwali_candidates[0][0]
+    seed_date = diwali_candidates[0][0]
 
-    diwali_date = candidate_date
-    if tithi_at_local_sunset(candidate_date, loc) != 30:
+    chosen = seed_date
+    checks: List[Tuple[str, str, int]] = []
+    t_sunset = tithi_at_local_sunset(seed_date, loc)
+    checks.append((seed_date.isoformat(), "sunset", t_sunset))
+    if t_sunset != 30:
         found = None
         for delta in (1, -1, 2, -2):
-            try_dt = candidate_date + timedelta(days=delta)
-            if tithi_at_local_sunset(try_dt, loc) == 30:
+            try_dt = seed_date + timedelta(days=delta)
+            t_sunset = tithi_at_local_sunset(try_dt, loc)
+            checks.append((try_dt.isoformat(), "sunset", t_sunset))
+            if t_sunset == 30:
                 found = try_dt
                 break
         if found is not None:
-            diwali_date = found
+            chosen = found
         else:
-            if tithi_at_local_sunrise(candidate_date, loc) == 30:
-                diwali_date = candidate_date
+            t_sunrise = tithi_at_local_sunrise(seed_date, loc)
+            checks.append((seed_date.isoformat(), "sunrise", t_sunrise))
+            if t_sunrise == 30:
+                chosen = seed_date
             else:
                 for delta in (1, -1, 2, -2):
-                    try_dt = candidate_date + timedelta(days=delta)
-                    if tithi_at_local_sunrise(try_dt, loc) == 30:
-                        diwali_date = try_dt
+                    try_dt = seed_date + timedelta(days=delta)
+                    t_sunrise = tithi_at_local_sunrise(try_dt, loc)
+                    checks.append((try_dt.isoformat(), "sunrise", t_sunrise))
+                    if t_sunrise == 30:
+                        chosen = try_dt
                         break
-    festivals["Diwali"] = diwali_date.isoformat()
 
+    rationale = "New moon in Oct/Nov; chose date where tithi 30 (Amavasya) prevails at sunset."
+    detail = FestivalDetail(
+        name="Diwali",
+        local_date=chosen,
+        iso=chosen.isoformat(),
+        rationale=rationale,
+        metadata={
+            "candidates": [(d.isoformat(), jd) for d, jd in diwali_candidates],
+            "tithi_checks": checks,
+        },
+    )
+    return detail
+
+
+def compute_holi_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Holi (Phalguna Purnima) as the date of the March full moon (simplified)."""
     holi_tt = None
-    for k, jd_tt in lun_unique:
-        if k == "FullMoon":
-            d_local, _ = tt_to_local_date(jd_tt)
+    chosen_local = None
+    for kind, jd_tt in lun_unique:
+        if kind == "FullMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month in (2, 3, 4):
                 if d_local.month == 3:
                     holi_tt = jd_tt
+                    chosen_local = d_local
                     break
                 if holi_tt is None:
                     holi_tt = jd_tt
+                    chosen_local = d_local
     if holi_tt is None:
         holi_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 3, 15, tzinfo=timezone.utc)))
         holi_tt = find_phase_time_tt_near(holi_guess_tt, 180.0, loc)
-    festivals["Holi"] = tt_to_local_date(holi_tt)[0].isoformat()
+        chosen_local = _tt_to_local_date(holi_tt, loc)[0]
+    return FestivalDetail(
+        name="Holi",
+        local_date=chosen_local,
+        iso=chosen_local.isoformat(),
+        rationale="Full moon around March (Phalguna Purnima)",
+        metadata={"phase_tt": holi_tt},
+    )
 
+
+def compute_maha_shivaratri_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Maha Shivaratri as the day before the Feb/Mar new moon (simplified)."""
     nm_choice = None
-    for k, jd_tt in lun_unique:
-        if k == "NewMoon":
-            d_local, _ = tt_to_local_date(jd_tt)
+    nm_tt = None
+    for kind, jd_tt in lun_unique:
+        if kind == "NewMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month in (2, 3):
                 nm_choice = d_local
+                nm_tt = jd_tt
                 break
     if nm_choice is None:
         nm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 2, 15, tzinfo=timezone.utc))), 0.0, loc)
-        nm_choice = tt_to_local_date(nm_tt)[0]
-    festivals["Maha Shivaratri"] = (nm_choice - timedelta(days=1)).isoformat()
+        nm_choice = _tt_to_local_date(nm_tt, loc)[0]
+    observance = nm_choice - timedelta(days=1)
+    return FestivalDetail(
+        name="Maha Shivaratri",
+        local_date=observance,
+        iso=observance.isoformat(),
+        rationale="Day before the new moon in Phalguna (Feb/Mar)",
+        metadata={"new_moon_local": nm_choice.isoformat(), "new_moon_tt": nm_tt},
+    )
 
+
+def compute_navratri_start_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Navratri start as the day after Ashwin Amavasya (Sep/Oct new moon)."""
     nav_start = None
-    for k, jd_tt in lun_unique:
-        if k == "NewMoon":
-            d_local, _ = tt_to_local_date(jd_tt)
+    nm_tt = None
+    for kind, jd_tt in lun_unique:
+        if kind == "NewMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month in (9, 10):
-                nav_start = (d_local + timedelta(days=1))
+                nav_start = d_local + timedelta(days=1)
+                nm_tt = jd_tt
                 break
     if nav_start is None:
         nm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 9, 15, tzinfo=timezone.utc))), 0.0, loc)
-        nav_start = tt_to_local_date(nm_tt)[0] + timedelta(days=1)
-    festivals["Navratri (Start)"] = nav_start.isoformat()
+        nav_start = _tt_to_local_date(nm_tt, loc)[0] + timedelta(days=1)
+    return FestivalDetail(
+        name="Navratri (Start)",
+        local_date=nav_start,
+        iso=nav_start.isoformat(),
+        rationale="Day after Ashwin Amavasya (Sep/Oct new moon)",
+        metadata={"ashwin_new_moon_tt": nm_tt},
+    )
 
+
+def compute_guru_purnima_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Guru Purnima as the July full moon."""
     guru = None
-    for k, jd_tt in lun_unique:
-        if k == "FullMoon":
-            d_local, _ = tt_to_local_date(jd_tt)
+    fm_tt = None
+    for kind, jd_tt in lun_unique:
+        if kind == "FullMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month == 7:
                 guru = d_local
+                fm_tt = jd_tt
                 break
     if guru is None:
         fm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 7, 15, tzinfo=timezone.utc))), 180.0, loc)
-        guru = tt_to_local_date(fm_tt)[0]
-    festivals["Guru Purnima"] = guru.isoformat()
+        guru = _tt_to_local_date(fm_tt, loc)[0]
+    return FestivalDetail(
+        name="Guru Purnima",
+        local_date=guru,
+        iso=guru.isoformat(),
+        rationale="Full moon in July",
+        metadata={"full_moon_tt": fm_tt},
+    )
 
+
+def compute_raksha_bandhan_detail(year: int, loc: Location, lun_unique: List[Tuple[str, float]]) -> FestivalDetail:
+    """Compute Raksha Bandhan as the August full moon."""
     raksha = None
-    for k, jd_tt in lun_unique:
-        if k == "FullMoon":
-            d_local, _ = tt_to_local_date(jd_tt)
+    fm_tt = None
+    for kind, jd_tt in lun_unique:
+        if kind == "FullMoon":
+            d_local, _ = _tt_to_local_date(jd_tt, loc)
             if d_local.year == year and d_local.month == 8:
                 raksha = d_local
+                fm_tt = jd_tt
                 break
     if raksha is None:
         fm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 8, 15, tzinfo=timezone.utc))), 180.0, loc)
-        raksha = tt_to_local_date(fm_tt)[0]
-    festivals["Raksha Bandhan"] = raksha.isoformat()
+        raksha = _tt_to_local_date(fm_tt, loc)[0]
+    return FestivalDetail(
+        name="Raksha Bandhan",
+        local_date=raksha,
+        iso=raksha.isoformat(),
+        rationale="Full moon in August",
+        metadata={"full_moon_tt": fm_tt},
+    )
 
+
+def compute_karwa_chauth_detail(year: int, loc: Location, diwali_detail: FestivalDetail) -> FestivalDetail:
+    """Compute Karwa Chauth approximately as 4 days before Diwali (placeholder rule)."""
     try:
-        di = datetime.fromisoformat(festivals["Diwali"])
-        festivals["Karwa Chauth"] = (di - timedelta(days=4)).date().isoformat()
+        di = datetime.fromisoformat(diwali_detail.iso)
+        kc = (di - timedelta(days=4)).date()
     except Exception:
-        festivals["Karwa Chauth"] = None
+        kc = None
+    return FestivalDetail(
+        name="Karwa Chauth",
+        local_date=kc,
+        iso=kc.isoformat() if kc else None,
+        rationale="Approximate: 4 days before Diwali",
+        metadata={"based_on": "Diwali", "diwali": diwali_detail.iso},
+    )
 
+
+def compute_makar_sankranti_detail(year: int, loc: Location) -> FestivalDetail:
+    """Compute Makar Sankranti as sidereal Sun's ingress into Capricorn (270° Lahiri)."""
     jan_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 1, 14, tzinfo=timezone.utc)))
     ingress_tt = find_solar_sidereal_ingress_tt_near(jan_guess_tt, 270.0)
-    festivals["Makar Sankranti"] = tt_to_local_date(ingress_tt)[0].isoformat()
+    local_date, _ = _tt_to_local_date(ingress_tt, loc)
+    return FestivalDetail(
+        name="Makar Sankranti",
+        local_date=local_date,
+        iso=local_date.isoformat(),
+        rationale="Sidereal Sun enters Capricorn (270° Lahiri)",
+        metadata={"ingress_tt": ingress_tt},
+    )
 
+
+def compute_vishuva_detail(year: int, loc: Location) -> FestivalDetail:
+    """Compute March equinox date approximately by minimizing |λ☉| over ±3 days."""
     march_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 3, 20, tzinfo=timezone.utc)))
     best_j = None
     best_diff = 1e9
@@ -140,6 +283,56 @@ def find_festivals_high_accuracy(year: int, loc: Location) -> dict:
         if diff < best_diff:
             best_diff = diff
             best_j = j
-    festivals["Vishuva (March Equinox approx)"] = tt_to_local_date(best_j)[0].isoformat()
+    local_date, _ = _tt_to_local_date(best_j, loc)
+    return FestivalDetail(
+        name="Vishuva (March Equinox approx)",
+        local_date=local_date,
+        iso=local_date.isoformat(),
+        rationale="Approximate March equinox from solar longitude",
+        metadata={"best_tt": best_j, "window_days": 3},
+    )
 
-    return festivals
+
+def find_festival_details(year: int, loc: Location) -> Dict[str, FestivalDetail]:
+    """Compute detailed festival info for the given year and location.
+
+    This orchestrates precomputations (lunations) and calls dedicated per-festival
+    functions. The result is a name→FestivalDetail mapping.
+    """
+    lun_unique = _precompute_lunations(year, loc)
+
+    diwali = compute_diwali_detail(year, loc, lun_unique)
+    holi = compute_holi_detail(year, loc, lun_unique)
+    shiv = compute_maha_shivaratri_detail(year, loc, lun_unique)
+    nav = compute_navratri_start_detail(year, loc, lun_unique)
+    guru = compute_guru_purnima_detail(year, loc, lun_unique)
+    raksha = compute_raksha_bandhan_detail(year, loc, lun_unique)
+    makar = compute_makar_sankranti_detail(year, loc)
+    vishuva = compute_vishuva_detail(year, loc)
+    karwa = compute_karwa_chauth_detail(year, loc, diwali)
+
+    details = {
+        diwali.name: diwali,
+        holi.name: holi,
+        shiv.name: shiv,
+        nav.name: nav,
+        guru.name: guru,
+        raksha.name: raksha,
+        karwa.name: karwa,
+        makar.name: makar,
+        vishuva.name: vishuva,
+    }
+    return details
+
+
+def find_festivals_high_accuracy(year: int, loc: Location) -> dict:
+    """Backward-compatible simple mapping of festival name → ISO date string.
+
+    Internally calls the detailed API and strips to date strings for
+    compatibility with existing consumers.
+    """
+    details = find_festival_details(year, loc)
+    simple = {}
+    for name, det in details.items():
+        simple[name] = det.iso
+    return simple
