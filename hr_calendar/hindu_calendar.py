@@ -13,6 +13,7 @@ from .time_utils import to_julian_day, jd_tt_from_jd_ut, jd_ut_from_jd_tt, from_
 from .sidereal import find_solar_sidereal_ingress_tt_near
 from .astro import sun_ecliptic_longitude_deg
 from .utils import wrap180
+from .rise_set import sunrise_jd_utc, sunset_jd_utc
 
 
 class HinduCalendar:
@@ -34,7 +35,9 @@ class HinduCalendar:
         """
         lun_unique = self._precompute_lunations(year)
         diwali = self._compute_diwali(year, lun_unique).isoformat()
-        holi = self._compute_holi(year, lun_unique).isoformat()
+        # Holi (color play) is the day after Holika Dahan (Purnima at Pradosh)
+        holika = self._compute_holika_dahan(year, lun_unique)
+        holi = (holika + timedelta(days=1)).isoformat()
         shiv = self._compute_maha_shivaratri(year, lun_unique).isoformat()
         nav = self._compute_navratri_start(year, lun_unique).isoformat()
         guru = self._compute_guru_purnima(year, lun_unique).isoformat()
@@ -72,6 +75,55 @@ class HinduCalendar:
     # ----------
     # Internals
     # ----------
+
+    def _jd_ut_from_local(self, dt_local: datetime) -> float:
+        """Convert a timezone-aware or naive local datetime to UT-based JD."""
+        if dt_local.tzinfo is None:
+            tz = timezone(timedelta(hours=self.location.tz))
+            dt_local = dt_local.replace(tzinfo=tz)
+        dt_utc = dt_local.astimezone(timezone.utc)
+        return to_julian_day(dt_utc)
+
+    def _tithi_at_local_clock(self, base_date: date, hour: int, minute: int) -> int:
+        """Tithi number at given local clock time on base_date."""
+        tz = timezone(timedelta(hours=self.location.tz))
+        dt_local = datetime(base_date.year, base_date.month, base_date.day, hour, minute, 0, tzinfo=tz)
+        jd_ut = self._jd_ut_from_local(dt_local)
+        jd_tt = jd_tt_from_jd_ut(jd_ut)
+        ang = lunar_phase_angle_tt_deg(jd_tt, False, self.location)
+        return int(ang // 12.0) + 1
+
+    def _sunrise_sunset_ut(self, base_date: date) -> Tuple[float, float]:
+        """Return (sunrise_ut_jd, sunset_ut_jd) for base_date at location."""
+        jd_rise = sunrise_jd_utc(datetime(base_date.year, base_date.month, base_date.day), self.location)
+        jd_set = sunset_jd_utc(datetime(base_date.year, base_date.month, base_date.day), self.location)
+        return jd_rise, jd_set
+
+    def _pradosh_center_tithi(self, base_date: date) -> int:
+        """Tithi at the center of Pradosh (≈72 min after sunset)."""
+        _, jd_set = self._sunrise_sunset_ut(base_date)
+        pradosh_center = jd_set + (72.0 / 1440.0)
+        jd_tt = jd_tt_from_jd_ut(pradosh_center)
+        ang = lunar_phase_angle_tt_deg(jd_tt, False, self.location)
+        return int(ang // 12.0) + 1
+
+    def _nishita_tithi(self, base_date: date) -> int:
+        """Tithi at Nishita (midpoint of the night between sunset and next sunrise)."""
+        _, jd_set = self._sunrise_sunset_ut(base_date)
+        jd_rise_next, _ = self._sunrise_sunset_ut(base_date + timedelta(days=1))
+        mid = 0.5 * (jd_set + jd_rise_next)
+        jd_tt = jd_tt_from_jd_ut(mid)
+        ang = lunar_phase_angle_tt_deg(jd_tt, False, self.location)
+        return int(ang // 12.0) + 1
+
+    def _aparahna_tithi(self, base_date: date) -> int:
+        """Tithi at center of Aparahna (middle of last third of daytime)."""
+        jd_rise, jd_set = self._sunrise_sunset_ut(base_date)
+        day_len = jd_set - jd_rise
+        center_last_third = jd_rise + (5.0 / 6.0) * day_len
+        jd_tt = jd_tt_from_jd_ut(center_last_third)
+        ang = lunar_phase_angle_tt_deg(jd_tt, False, self.location)
+        return int(ang // 12.0) + 1
 
     def _precompute_lunations(self, year: int) -> List[Tuple[str, float]]:
         """Scan and bracket new/full moons, refine with phase root-finder.
@@ -139,11 +191,15 @@ class HinduCalendar:
         seed_date = diwali_candidates[0][0]
 
         chosen = seed_date
-        if self.tithi_at_sunset(seed_date) != 30:
+        def ok(d: date) -> bool:
+            # Prefer Pradosh-center tithi per common observance
+            return self._pradosh_center_tithi(d) == 30
+
+        if not ok(seed_date):
             found = None
             for delta in (1, -1, 2, -2):
                 try_dt = seed_date + timedelta(days=delta)
-                if self.tithi_at_sunset(try_dt) == 30:
+                if ok(try_dt):
                     found = try_dt
                     break
             if found is not None:
@@ -159,40 +215,44 @@ class HinduCalendar:
                             break
         return chosen
 
-    def _compute_holi(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
-        """Holi (Phalguna Purnima): local date of the March full moon (simplified)."""
-        holi_tt = None
-        chosen_local = None
+    def _compute_holika_dahan(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Holika Dahan: require Purnima at Pradosh (evening) around March."""
+        fm_tt = None
+        fm_local = None
         for kind, jd_tt in lun_unique:
             if kind == "FullMoon":
                 d_local, _ = self._tt_to_local_date(jd_tt)
                 if d_local.year == year and d_local.month in (2, 3, 4):
+                    fm_tt = jd_tt
+                    fm_local = d_local
                     if d_local.month == 3:
-                        holi_tt = jd_tt
-                        chosen_local = d_local
                         break
-                    if holi_tt is None:
-                        holi_tt = jd_tt
-                        chosen_local = d_local
-        if holi_tt is None:
+        if fm_tt is None:
             holi_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 3, 15, tzinfo=timezone.utc)))
-            holi_tt = find_phase_time_tt_near(holi_guess_tt, 180.0, self.location)
-            chosen_local = self._tt_to_local_date(holi_tt)[0]
-        return chosen_local
+            fm_tt = find_phase_time_tt_near(holi_guess_tt, 180.0, self.location)
+            fm_local = self._tt_to_local_date(fm_tt)[0]
+        for delta in (0, -1, 1):
+            d = fm_local + timedelta(days=delta)
+            if self._pradosh_center_tithi(d) == 15:
+                return d
+        return fm_local
 
     def _compute_maha_shivaratri(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
-        """Maha Shivaratri: day before the Feb/Mar new moon (simplified)."""
-        nm_choice = None
+        """Maha Shivaratri: Krishna Chaturdashi (tithi 29) at Nishita in Feb/Mar."""
+        candidates: List[date] = []
         for kind, jd_tt in lun_unique:
             if kind == "NewMoon":
                 d_local, _ = self._tt_to_local_date(jd_tt)
                 if d_local.year == year and d_local.month in (2, 3):
-                    nm_choice = d_local
-                    break
-        if nm_choice is None:
+                    candidates.extend([d_local - timedelta(days=1), d_local - timedelta(days=2), d_local])
+        if not candidates:
             nm_tt = find_phase_time_tt_near(jd_tt_from_jd_ut(to_julian_day(datetime(year, 2, 15, tzinfo=timezone.utc))), 0.0, self.location)
-            nm_choice = self._tt_to_local_date(nm_tt)[0]
-        return nm_choice - timedelta(days=1)
+            d_local = self._tt_to_local_date(nm_tt)[0]
+            candidates = [d_local - timedelta(days=1), d_local - timedelta(days=2), d_local]
+        for d in sorted(set(candidates)):
+            if self._nishita_tithi(d) == 29:
+                return d
+        return sorted(set(candidates))[0]
 
     def _compute_navratri_start(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
         """Navratri start: day after Ashwin Amavasya (Sep/Oct new moon)."""
@@ -309,24 +369,24 @@ class HinduCalendar:
         return easter - timedelta(days=2)
 
     def _compute_buddha_purnima_holiday(self, year: int) -> date:
-        """Buddha Purnima (Vaishakha Purnima, simplified): full moon in May."""
+        """Buddha Purnima (Vaishakha Purnima): prefer Purnima at sunrise in May."""
         lun = self._precompute_lunations(year)
-        fm_tt = None
-        best = (1e9, None)
-        target_jd = to_julian_day(datetime(year, 5, 15, tzinfo=timezone.utc))
+        candidates: List[date] = []
         for kind, jd_tt in lun:
-            if kind != "FullMoon":
-                continue
-            d_local, _ = self._tt_to_local_date(jd_tt)
-            if d_local.year == year and d_local.month == 5:
-                fm_tt = jd_tt
-                break
-            diff = abs(jd_tt - target_jd)
-            if diff < best[0]:
-                best = (diff, jd_tt)
-        if fm_tt is None:
-            fm_tt = best[1]
-        return self._tt_to_local_date(fm_tt)[0]
+            if kind == "FullMoon":
+                d_local, _ = self._tt_to_local_date(jd_tt)
+                if d_local.year == year and d_local.month in (4, 5):
+                    candidates.append(d_local)
+        for d in candidates:
+            if d.month == 5 and self.tithi_at_sunrise(d) == 15:
+                return d
+        for d in candidates:
+            if d.month == 5:
+                return d
+        for d in candidates:
+            if self.tithi_at_sunrise(d) == 15:
+                return d
+        return candidates[0] if candidates else date(year, 5, 1)
 
     def _compute_janmashtami_holiday(self, year: int) -> date:
         """Janmashtami (Bhadrapada Krishna Ashtami, simplified).
@@ -367,13 +427,17 @@ class HinduCalendar:
         return fm_local + timedelta(days=8)
 
     def _compute_dussehra_holiday(self, year: int) -> date:
-        """Dussehra (Vijayadashami, simplified): 10th day after Pratipada.
-
-        Approximation: Navratri start is Shukla Pratipada, so Dussehra ≈ start + 9 days.
-        """
+        """Dussehra (Vijayadashami): ensure Dashami at Aparahna in Ashwin."""
         lun = self._precompute_lunations(year)
         start = self._compute_navratri_start(year, lun)
-        return start + timedelta(days=9)
+        seed = start + timedelta(days=9)
+        if self._aparahna_tithi(seed) == 10:
+            return seed
+        for delta in (-1, 1, -2, 2):
+            d = seed + timedelta(days=delta)
+            if self._aparahna_tithi(d) == 10:
+                return d
+        return seed
 
     def _compute_diwali_deepavali_holiday(self, year: int) -> date:
         """Diwali/Deepavali convenience wrapper."""
@@ -381,24 +445,25 @@ class HinduCalendar:
         return self._compute_diwali(year, lun)
 
     def _compute_guru_nanak_jayanti_holiday(self, year: int) -> date:
-        """Guru Nanak Jayanti (Kartik Purnima, simplified): full moon in November."""
+        """Guru Nanak Jayanti (Kartik Purnima): prefer Purnima at sunrise in Nov."""
         lun = self._precompute_lunations(year)
-        fm_tt = None
-        best = (1e9, None)
-        target_jd = to_julian_day(datetime(year, 11, 15, tzinfo=timezone.utc))
+        candidates: List[date] = []
         for kind, jd_tt in lun:
             if kind != "FullMoon":
                 continue
             d_local, _ = self._tt_to_local_date(jd_tt)
-            if d_local.year == year and d_local.month == 11:
-                fm_tt = jd_tt
-                break
-            diff = abs(jd_tt - target_jd)
-            if diff < best[0]:
-                best = (diff, jd_tt)
-        if fm_tt is None:
-            fm_tt = best[1]
-        return self._tt_to_local_date(fm_tt)[0]
+            if d_local.year == year and d_local.month in (10, 11):
+                candidates.append(d_local)
+        for d in candidates:
+            if d.month == 11 and self.tithi_at_sunrise(d) == 15:
+                return d
+        for d in candidates:
+            if d.month == 11:
+                return d
+        for d in candidates:
+            if self.tithi_at_sunrise(d) == 15:
+                return d
+        return candidates[0] if candidates else date(year, 11, 1)
 
     def _easter_sunday_gregorian(self, year: int) -> date:
         """Compute Easter Sunday (Gregorian) using Anonymous Gregorian algorithm."""
