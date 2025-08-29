@@ -1,3 +1,10 @@
+"""Sunrise/sunset calculations using bisection with refraction correction.
+
+We solve for when the true solar altitude equals -0.833° (standard refraction
+and solar radius), scanning the local day to bracket the event then refining by
+bisection. This is robust for all latitudes with normal Sun paths.
+"""
+
 from datetime import datetime, timezone, timedelta
 import math
 from .locations import Location
@@ -7,6 +14,7 @@ from .utils import norm_deg
 
 
 def sun_altitude_deg_at_ut(jd_ut: float, lat_deg: float, lon_deg: float) -> float:
+    """Solar altitude (deg) at a UT-based JD and geographic location."""
     jd_tt = jd_tt_from_jd_ut(jd_ut)
     ra, dec = sun_ra_dec_tt(jd_tt)
     GMST = gmst_deg_from_jd_ut(jd_ut)
@@ -18,6 +26,13 @@ def sun_altitude_deg_at_ut(jd_ut: float, lat_deg: float, lon_deg: float) -> floa
 
 
 def _find_sun_event_jd_utc(date_local: datetime, loc: Location, target_alt: float, is_rise: bool, step_minutes: int = 10) -> float:
+    """Find sunrise/sunset UTC JD by scanning and bisection on altitude.
+
+    - date_local: local civil date at location (time ignored)
+    - target_alt: altitude in degrees (-0.833 for standard sunrise/sunset)
+    - is_rise: True for sunrise, False for sunset
+    - step_minutes: scan granularity to find a sign change bracket
+    """
     tz = timezone(timedelta(hours=loc.tz))
     local_mid = datetime(date_local.year, date_local.month, date_local.day, 0, 0, 0, tzinfo=tz)
     utc_start = local_mid.astimezone(timezone.utc)

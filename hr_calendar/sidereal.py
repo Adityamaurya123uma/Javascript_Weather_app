@@ -1,9 +1,16 @@
+"""Sidereal (Lahiri) conversion and solar ingress finder."""
+
 from .utils import norm_deg
 from .time_utils import T_centuries
 from .astro import sun_ecliptic_longitude_deg
 
 
 def lahiri_ayanamsa_deg(jd_tt: float) -> float:
+    """Approximate Lahiri ayanamsa (deg) at TT JD.
+
+    Uses a base value near J2000.0 and a linear drift ~1.396°/century with a
+    small quadratic correction.
+    """
     T = T_centuries(jd_tt)
     base_j2000 = 23.85308
     drift_deg_per_century = 1.3962634
@@ -12,10 +19,12 @@ def lahiri_ayanamsa_deg(jd_tt: float) -> float:
 
 
 def to_sidereal_deg(lambda_tropical_deg: float, jd_tt: float) -> float:
+    """Convert tropical ecliptic longitude to Lahiri sidereal longitude (deg)."""
     return norm_deg(lambda_tropical_deg - lahiri_ayanamsa_deg(jd_tt))
 
 
 def find_solar_sidereal_ingress_tt_near(jd_tt_guess: float, target_sid_deg: float) -> float:
+    """Find TT JD when sidereal Sun equals target_sid_deg (secant-like method)."""
     x0 = jd_tt_guess - 2.0
     x1 = jd_tt_guess + 2.0
     def f(jd_tt):

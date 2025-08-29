@@ -1,3 +1,12 @@
+"""Time and timescale helpers (Julian days, TT/UT conversion, GMST).
+
+This module centralizes conversions between civil time and astronomical
+timescales used in the package:
+- Julian Day (JD)
+- Terrestrial Time (TT) and Universal Time (UT) conversion via ΔT
+- Greenwich Mean Sidereal Time (GMST)
+"""
+
 import math
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
@@ -5,6 +14,10 @@ from .utils import norm_deg
 
 
 def to_julian_day(dt: datetime) -> float:
+    """Convert timezone-aware or naive datetime to Julian Day (UTC).
+
+    Naive datetimes are assumed to be UTC.
+    """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
@@ -21,6 +34,7 @@ def to_julian_day(dt: datetime) -> float:
 
 
 def from_julian_day(jd: float) -> datetime:
+    """Convert Julian Day (UTC) to a timezone-aware UTC datetime."""
     Z = int(jd + 0.5)
     F = (jd + 0.5) - Z
     if Z < 2299161:
@@ -46,11 +60,16 @@ def from_julian_day(jd: float) -> datetime:
 
 
 def T_centuries(jd: float) -> float:
+    """Julian centuries since J2000.0 (TT), per Meeus convention."""
     return (jd - 2451545.0) / 36525.0
 
 
 @lru_cache(maxsize=1024)
 def delta_t_seconds_approx(year: int, month: int = 1) -> float:
+    """Approximate ΔT (TT−UT) in seconds for a given year and month.
+
+    Polynomial approximations good to a few seconds for 1900–2050.
+    """
     y = year + (month - 0.5) / 12.0
     if 2005 <= y <= 2050:
         t = y - 2000
@@ -68,12 +87,14 @@ def delta_t_seconds_approx(year: int, month: int = 1) -> float:
 
 
 def jd_tt_from_jd_ut(jd_ut: float) -> float:
+    """Convert UT-based JD to TT-based JD using ΔT approximation."""
     dt = from_julian_day(jd_ut)
     dt_s = delta_t_seconds_approx(dt.year, dt.month)
     return jd_ut + dt_s / 86400.0
 
 
 def jd_ut_from_jd_tt(jd_tt: float) -> float:
+    """Convert TT-based JD to UT-based JD using ΔT approximation."""
     dt = from_julian_day(jd_tt)
     dt_s = delta_t_seconds_approx(dt.year, dt.month)
     return jd_tt - dt_s / 86400.0
@@ -81,6 +102,7 @@ def jd_ut_from_jd_tt(jd_tt: float) -> float:
 
 @lru_cache(maxsize=8192)
 def gmst_deg_from_jd_ut(jd_ut: float) -> float:
+    """Compute GMST (degrees) from UT-based JD using the IAU expression."""
     T = (jd_ut - 2451545.0) / 36525.0
     GMST = norm_deg(280.46061837 + 360.98564736629 * (jd_ut - 2451545.0) + 0.000387933 * T * T - T * T * T / 38710000.0)
     return GMST

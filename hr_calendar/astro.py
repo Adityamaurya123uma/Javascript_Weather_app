@@ -1,3 +1,12 @@
+"""Astronomical models (Sun/Moon) used by the calendar.
+
+Implements compact versions of Meeus-style formulas for:
+- Mean obliquity
+- Solar ecliptic longitude (apparent)
+- Lunar ecliptic longitude and distance (reduced series)
+- Topocentric lunar longitude via simplified parallax correction
+"""
+
 import math
 from functools import lru_cache
 from .utils import norm_deg, EARTH_RADIUS_KM
@@ -6,11 +15,13 @@ from .time_utils import T_centuries, jd_ut_from_jd_tt, gmst_deg_from_jd_ut
 
 @lru_cache(maxsize=4096)
 def mean_obliquity_deg(T: float) -> float:
+    """Return mean obliquity of the ecliptic (deg) for Julian centuries T."""
     secs = 84381.406 - 46.836769 * T - 0.0001831 * T * T + 0.00200340 * T * T * T
     return secs / 3600.0
 
 
 def nutation_approx(jd: float) -> tuple[float, float]:
+    """Very small set of nutation terms (longitude/obliquity) in degrees."""
     T = T_centuries(jd)
     Omega = math.radians(norm_deg(125.04452 - 1934.136261 * T + 0.0020708 * T * T))
     D = math.radians(norm_deg(297.85036 + 445267.111480 * T))
@@ -20,6 +31,7 @@ def nutation_approx(jd: float) -> tuple[float, float]:
 
 
 def sun_ecliptic_longitude_deg(jd_tt: float) -> float:
+    """Apparent ecliptic longitude of the Sun (deg) at TT Julian Day."""
     T = T_centuries(jd_tt)
     L0 = 280.4664567 + 36000.76982779 * T + 0.0003032028 * T * T
     M = 357.52911 + 35999.0502909 * T - 0.0001536 * T * T
@@ -33,6 +45,7 @@ def sun_ecliptic_longitude_deg(jd_tt: float) -> float:
 
 
 def moon_ecliptic_longitude_and_distance(jd_tt: float) -> tuple[float, float]:
+    """Geocentric lunar ecliptic longitude (deg) and distance (km), reduced series."""
     T = T_centuries(jd_tt)
     Lp = norm_deg(218.3164477 + 481267.88123421 * T - 0.0015786 * T * T + T ** 3 / 538841.0 - T ** 4 / 65194000.0)
     D = norm_deg(297.8501921 + 445267.1114034 * T - 0.0018819 * T * T)
@@ -91,6 +104,7 @@ def moon_ecliptic_longitude_and_distance(jd_tt: float) -> tuple[float, float]:
 
 
 def sun_ra_dec_tt(jd_tt: float) -> tuple[float, float]:
+    """Right ascension and declination of the Sun at TT JD (radians)."""
     lam = math.radians(sun_ecliptic_longitude_deg(jd_tt))
     eps = math.radians(mean_obliquity_deg(T_centuries(jd_tt)))
     x = math.cos(lam)
@@ -102,6 +116,12 @@ def sun_ra_dec_tt(jd_tt: float) -> tuple[float, float]:
 
 
 def topocentric_moon_longitude(jd_tt: float, lat_deg: float, lon_deg: float, height_m: float = 0.0) -> float:
+    """Approximate topocentric lunar ecliptic longitude (deg) including parallax.
+
+    This uses a simplified transformation through equatorial coordinates and a
+    small-angle parallax correction. It is not a full rigorous topocentric
+    transform but adequate for day-level festival rules.
+    """
     lam_geo_deg, dist_km = moon_ecliptic_longitude_and_distance(jd_tt)
     parallax_rad = math.asin(EARTH_RADIUS_KM / dist_km)
     lam = math.radians(lam_geo_deg)

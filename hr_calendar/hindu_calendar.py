@@ -1,3 +1,10 @@
+"""Hindu calendar class-centric API and festival computations.
+
+This class owns the Hindu festival rules and orchestrates astronomical
+computations via helper modules. The design keeps accuracy equivalent to the
+previous functions while providing a clean OOP surface.
+"""
+
 from datetime import datetime, timedelta, timezone, date
 from typing import List, Tuple, Dict
 from .locations import Location
@@ -13,7 +20,6 @@ class HinduCalendar:
 
     Provides convenient methods for:
     - festivals_for_year: simple mapping (name → ISO date), all logic here
-    - festival_details_for_year: rich FestivalDetail objects with rationale/metadata
     - tithi_at_sunrise/tithi_at_sunset
     - phase_time_near: solve for lunar phase near a UTC datetime
     """
@@ -107,11 +113,17 @@ class HinduCalendar:
         return lun_unique
 
     def _tt_to_local_date(self, jd_tt: float) -> Tuple[date, float]:
+        """Convert TT JD to (local civil date, UT JD) at this calendar's location."""
         jd_ut = jd_ut_from_jd_tt(jd_tt)
         dt_utc = from_julian_day(jd_ut)
         return (dt_utc + timedelta(hours=self.location.tz)).date(), jd_ut
 
     def _compute_diwali(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Diwali (Kartik Amavasya): require Amavasya at local sunset.
+
+        Seed candidates by selecting the Oct/Nov new moon nearest Nov 1. If
+        sunset tithi is not Amavasya, probe ±1–2 days and fall back to sunrise.
+        """
         diwali_candidates: List[Tuple[date, float]] = []
         for kind, jd_tt in lun_unique:
             if kind == "NewMoon":
@@ -148,6 +160,7 @@ class HinduCalendar:
         return chosen
 
     def _compute_holi(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Holi (Phalguna Purnima): local date of the March full moon (simplified)."""
         holi_tt = None
         chosen_local = None
         for kind, jd_tt in lun_unique:
@@ -168,6 +181,7 @@ class HinduCalendar:
         return chosen_local
 
     def _compute_maha_shivaratri(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Maha Shivaratri: day before the Feb/Mar new moon (simplified)."""
         nm_choice = None
         for kind, jd_tt in lun_unique:
             if kind == "NewMoon":
@@ -181,6 +195,7 @@ class HinduCalendar:
         return nm_choice - timedelta(days=1)
 
     def _compute_navratri_start(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Navratri start: day after Ashwin Amavasya (Sep/Oct new moon)."""
         nav_start = None
         for kind, jd_tt in lun_unique:
             if kind == "NewMoon":
@@ -194,6 +209,7 @@ class HinduCalendar:
         return nav_start
 
     def _compute_guru_purnima(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Guru Purnima: July full moon."""
         guru = None
         for kind, jd_tt in lun_unique:
             if kind == "FullMoon":
@@ -207,6 +223,7 @@ class HinduCalendar:
         return guru
 
     def _compute_raksha_bandhan(self, year: int, lun_unique: List[Tuple[str, float]]) -> date:
+        """Raksha Bandhan: August full moon."""
         raksha = None
         for kind, jd_tt in lun_unique:
             if kind == "FullMoon":
@@ -220,12 +237,14 @@ class HinduCalendar:
         return raksha
 
     def _compute_makar_sankranti(self, year: int) -> date:
+        """Makar Sankranti: sidereal Sun enters Capricorn (270° Lahiri)."""
         jan_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 1, 14, tzinfo=timezone.utc)))
         ingress_tt = find_solar_sidereal_ingress_tt_near(jan_guess_tt, 270.0)
         local_date, _ = self._tt_to_local_date(ingress_tt)
         return local_date
 
     def _compute_vishuva(self, year: int) -> date:
+        """Vishuva (March equinox, approximate) by minimizing |λ☉| over ±3 days."""
         march_guess_tt = jd_tt_from_jd_ut(to_julian_day(datetime(year, 3, 20, tzinfo=timezone.utc)))
         best_j = None
         best_diff = 1e9

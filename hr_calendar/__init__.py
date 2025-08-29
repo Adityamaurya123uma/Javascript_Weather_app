@@ -1,3 +1,5 @@
+"""Public API surface for the hr_calendar package."""
+
 from .festivals import find_festivals_high_accuracy
 from .locations import Location, LOCATIONS
 from .hindu_calendar import HinduCalendar

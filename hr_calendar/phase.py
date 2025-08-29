@@ -1,3 +1,5 @@
+"""Lunar phase, tithi, and phase-root finding utilities."""
+
 import math
 from datetime import datetime
 from .locations import Location
@@ -8,6 +10,10 @@ from .utils import norm_deg
 
 
 def lunar_phase_angle_tt_deg(jd_tt: float, use_topo: bool, loc: Location) -> float:
+    """Elongation λ_moon − λ_sun (deg) at TT JD.
+
+    If use_topo is True, uses a simplified topocentric lunar longitude.
+    """
     if use_topo:
         lam_m = topocentric_moon_longitude(jd_tt, loc.lat, loc.lon, loc.height_m)
     else:
@@ -17,6 +23,7 @@ def lunar_phase_angle_tt_deg(jd_tt: float, use_topo: bool, loc: Location) -> flo
 
 
 def tithi_at_local_sunrise(date_local: datetime, loc: Location) -> int:
+    """Tithi number (1–30) prevailing at local sunrise."""
     jd_sunrise_ut = sunrise_jd_utc(date_local, loc)
     jd_tt = jd_tt_from_jd_ut(jd_sunrise_ut)
     ang = lunar_phase_angle_tt_deg(jd_tt, False, loc)
@@ -24,6 +31,7 @@ def tithi_at_local_sunrise(date_local: datetime, loc: Location) -> int:
 
 
 def tithi_at_local_sunset(date_local: datetime, loc: Location) -> int:
+    """Tithi number (1–30) prevailing at local sunset."""
     jd_sunset_ut = sunset_jd_utc(date_local, loc)
     jd_tt = jd_tt_from_jd_ut(jd_sunset_ut)
     ang = lunar_phase_angle_tt_deg(jd_tt, False, loc)
@@ -31,6 +39,7 @@ def tithi_at_local_sunset(date_local: datetime, loc: Location) -> int:
 
 
 def find_phase_time_tt_near(jd_tt_guess: float, target_deg: float, loc: Location) -> float:
+    """Refine to a TT time where elongation equals target_deg (secant method)."""
     x0 = jd_tt_guess - 1.0
     x1 = jd_tt_guess + 1.0
     def f(jd_tt):
