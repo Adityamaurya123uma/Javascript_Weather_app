@@ -12,7 +12,7 @@ class HinduCalendar:
     """High-level class for Hindu calendar computations at a given location.
 
     Provides convenient methods for:
-    - festivals_for_year: simple mapping (name → ISO date)
+    - festivals_for_year: simple mapping (name → ISO date), all logic here
     - festival_details_for_year: rich FestivalDetail objects with rationale/metadata
     - tithi_at_sunrise/tithi_at_sunset
     - phase_time_near: solve for lunar phase near a UTC datetime
